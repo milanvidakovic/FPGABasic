@@ -1,29 +1,26 @@
-#define DESKTOP 0
 #define DEBUG 0
 
-#if DESKTOP == 1
 #include <stdio.h>
+#include <sprintf.h>
 #include <string.h>
-#else
-#include "stdio.h"
-#include "sprintf.h"
-#include "string.h"
-#include "consts.h"
-#include "graphics.h"
-#include "files.h"
-#include "keyboard.h"
-#endif
+#include <consts.h>
+#include <graphics.h>
+#include <files.h>
+#include <keyboard.h>
+#include <spi.h>
+#include <fat.h>
+#include <enc28j60.h>
+#include <tcpip.h>
+#include <kernel.h>
 
-#define kVersion "v0.20"
+#define kVersion "v0.41"
 
 // size of our program ram
 #define kRamSize   64*1024 
-#if DESKTOP == 1
-char program[kRamSize];
-#else
-char *program = (char *)0x20000;
-char *buffer = (char *)(0x20000 + kRamSize + 1024);
-#endif
+char *program = (char *)310000;
+char *buffer = (char *)197632;
+//char *program = (char *)1100000;
+//char *buffer = (char *)1976320;
 
 unsigned char *program_start;
 unsigned char *program_end;
@@ -41,6 +38,9 @@ unsigned char *variables_begin;
 char *bsp;
 char *tempsp;
 char table_index;
+
+char drive = 0;
+int eth = 1;
 
 #define STACK_GOSUB_FLAG 'G'
 #define STACK_FOR_FLAG 'F'
@@ -65,6 +65,7 @@ typedef int VAR;
 
 VAR expression(void);
 int direct();
+void init_K_API();
 
 #define STACK_SIZE (sizeof(struct stack_for_frame)*10)
 #define VAR_SIZE sizeof(VAR) // Size of variables in bytes
@@ -87,8 +88,8 @@ const char keywords[] = {
   'B','Y','E'             ,0x01,			// BYE
   'E','X','I','T'         ,0x01,			// EXIT
   'P','R','I','N','T'     ,0x01,			// PRINT
-  '?'					  					,0x01,			// ?
-  'L','I','S','T'         ,0x01,  		// LIST
+  '?'					  ,0x01,			// ?
+  'L','I','S','T'         ,0x01,  			// LIST
   'R','U','N'             ,0x01,			// RUN
   'N','E','W'             ,0x01,			// NEW
   'L','E','T'             ,0x01,			// LET
@@ -105,25 +106,24 @@ const char keywords[] = {
   'E','D','I', 'T'        ,0x01,			// EDIT
   'L','O','A','D'         ,0x01,			// LOAD
   'S','A','V','E'         ,0x01,			// SAVE
-  'D','I','R'			        ,0x01,			// DIR
-  'M','O','D','E'	        ,0x01,			// MODE
-  'P','L','O','T'			    ,0x01,			// PLOT
-  'L','I','N','E'			    ,0x01,			// LINE
+  'D','I','R'			  ,0x01,			// DIR
+  'M','O','D','E'	      ,0x01,			// MODE
+  'P','L','O','T'		  ,0x01,			// PLOT
+  'L','I','N','E'		  ,0x01,			// LINE
   'C','I','R','C','L','E' ,0x01,			// CIRCLE
-  'D','R','A','W'			    ,0x01,			// DRAW
-  'H','E','L','P'     		,0x01,			// HELP
-  'D','E','L','A','Y'   	,0x01,			// DELAY
-  'C','U','R','S','O','R'	,0x01,			// CURSOR
+  'D','R','A','W'		  ,0x01,			// DRAW
+  'H','E','L','P'     	  ,0x01,			// HELP
+  'D','E','L','A','Y'     ,0x01,			// DELAY
+  'C','U','R','S','O','R' ,0x01,			// CURSOR
   'P','O','K','E'         ,0x01,			// POKE
-  'E','X','E','C'	        ,0x01,			// EXEC
-  'S','Y','S'			        ,0x01,			// SYS
-/*
+  'E','X','E','C'	      ,0x01,			// EXEC
+  'S','Y','S'			  ,0x01,			// SYS
+  'D','R','I','V','E'	  ,0x01, 			// DRIVE
+  'T','I','M','E'		  ,0x01,			// TIME
   'R','E','M'             ,0x01,			// REM
-  'R','S','E','E','D'     ,0x01,			// RSEED
-  'P','O','K','E'         ,0x01,			// POKE
-  'F','I','L','E','S'     ,0x01,			// FILES
   '\''                    ,0x01,			// '
-*/
+  'E','T','H'             ,0x01,			// ETH
+  'C','O','L','O','R'     ,0x01,			// COLOR
   0
 };
 // by moving the command list to an enum, we can easily remove sections 
@@ -149,36 +149,37 @@ enum {
 	KW_INPUT,
 	KW_CLS,
 	KW_EDIT,
-  KW_LOAD,
-  KW_SAVE,
-  KW_DIR,
-  KW_MODE,
-  KW_PLOT,
-  KW_LINE,
-  KW_CIRCLE,
-  KW_DRAW,
-  KW_HELP,
-  KW_DELAY,
-  KW_CURSOR,
-  KW_POKE,
-  KW_EXEC,
-  KW_SYS,
-	/*
-	  KW_REM,
-	  KW_FILES,
-	  KW_QUOTE,
-	  KW_RSEED,
-	*/  KW_DEFAULT /* always the final one*/
+	KW_LOAD,
+	KW_SAVE,
+	KW_DIR,
+	KW_MODE,
+	KW_PLOT,
+	KW_LINE,
+	KW_CIRCLE,
+	KW_DRAW,
+	KW_HELP,
+	KW_DELAY,
+	KW_CURSOR,
+	KW_POKE,
+	KW_EXEC,
+	KW_SYS,
+	KW_DRIVE,
+	KW_TIME,
+	KW_REM,
+	KW_QUOTE,
+	KW_ETH,
+	KW_COLOR,
+	KW_DEFAULT /* always the final one*/
 };
 
 const unsigned char func_tab[] = {
   'P','E','E','K'				, 0x01,
-  'A','B','S'						, 0x01,
-  'A','R','E','A','D'		, 0x01,
-  'D','R','E','A','D'		, 0x01,
-  'R','N','D'						, 0x01,
+  'A','B','S'					, 0x01,
+  'A','R','E','A','D'			, 0x01,
+  'D','R','E','A','D'			, 0x01,
+  'R','N','D'					, 0x01,
   'K','E','Y'			     	, 0x01,
-  'I','S','K','E','Y'   , 0x01,
+  'I','S','K','E','Y'   		, 0x01,
   0
 };
 #define FUNC_PEEK    0
@@ -203,13 +204,13 @@ const char step_tab[] = {
 const char relop_tab[] = {
   '>','='			,0x01,
   '<','>'			,0x01,
-  '>'					,0x01,
-  '='					,0x01,
+  '>'				,0x01,
+  '='				,0x01,
   '<','='			,0x01,
-  '<'					,0x01,
+  '<'				,0x01,
   '!','='			,0x01,
-  'A','N','D' ,0x01,
-  'O','R'		  ,0x01,
+  'A','N','D' 		,0x01,
+  'O','R'		  	,0x01,
   0
 };
 
@@ -219,48 +220,28 @@ const char relop_tab[] = {
 #define RELOP_EQ		3
 #define RELOP_LE		4
 #define RELOP_LT		5
-#define RELOP_NE_BANG		6
+#define RELOP_NE_BANG	6
 #define RELOP_AND		7
 #define RELOP_OR		8
 #define RELOP_UNKNOWN	9
 
-void exec_help()
-{
-	printf("END\n");
-	printf("MEM\n");
-	printf("LET I = 5\n");
-	printf("I = 5\n");
-	printf("INPUT A\n");
-	printf("PRINT A\n");
-	printf("? A\n");
-	printf("FOR I = 1 TO 10 STEP 2\n");
-	printf("NEXT I\n");
-	printf("IF I = 5 GOTO 100\n");
-	printf("GOTO 100\n");
-	printf("GOSUB 100\n");
-	printf("RETURN\n");
-	printf("LOAD P1.BAS\n");
-	printf("SAVE P2.BAS\n");
-	printf("MODE 0 (MODE 1, MODE 2)\n");
-	printf("PLOT 100, 100, color\n");
-	printf("LINE 100, 100, 200, 200, color\n");
-	printf("CIRCLE 100, 100, 50, color\n");
-	printf("DRAW 100, 100, color, 'TEXT'\n");
-	printf("A = KEY()\n");
-	printf("A = ISKEY()\n");
-	printf("DELAY 1000\n");
-	printf("CURSOR 10, 10\n");
-	printf("EXEC TEST.BIN\n");
-	printf("SYS 0\n");
-}
 
-void outchar(int c)
+void init_eth()
 {
-#if DESKTOP == 1
-	printf("%c", c);
-#else
-	put_char(c);
-#endif
+	enc28j60Init(MYMAC);
+
+	//printf("rev: %d\n", enc28j60getrev());
+	//printf("is link up: %d\n", isLinkUp());
+	if (isLinkUp())
+	{
+		tcpipBegin(1500, eth_buffer, MYMAC);
+		staticSetup(MYIP, GWIP, DNSIP, MASK);
+		parseIp(hisip, server_ip);
+		//printf("%d.%d.%d.%d\n", hisip[0], hisip[1], hisip[2], hisip[3]); 
+	} else 
+	{
+		printf("No ethernet link available\n.");
+	}
 }
 
 void getln(int prompt)
@@ -270,7 +251,7 @@ void getln(int prompt)
 
 	txtpos[0] = 0;
 
-	outchar(prompt);
+	put_char(prompt);
 	gets(txtpos);
 
 	l = strlen(txtpos);
@@ -304,56 +285,225 @@ void ignore_blanks()
 		txtpos++;
 }
 
-void printmsgNoNL(const char *msg)
+void skip_to_end()
 {
-	while (*msg != 0)
+	txtpos = program_end + sizeof(LINENUM);
+
+	// Find the end of the freshly entered line
+	while (*txtpos != NL)
+		txtpos++;
+
+	// Move it to the end of program_memory
 	{
-		outchar(*msg);
-		msg++;
+		unsigned char *dest;
+		dest = variables_begin - 1;
+		while (1)
+		{
+			*dest = *txtpos;
+			if (txtpos == program_end + sizeof(LINENUM))
+				break;
+			dest--;
+			txtpos--;
+		}
+		txtpos = dest;
 	}
 }
 
-void line_terminator(void)
+unsigned char *findline(void)
 {
-	outchar(NL);
-	//outchar(CR);
-}
-
-void printmsg(char *msg)
-{
-	printmsgNoNL(msg);
-	line_terminator();
-}
-
-void printnum(int num)
-{
-	int digits = 0;
-
-	if (num < 0)
+	unsigned char *line = program_start;
+	while (1)
 	{
-		num = -num;
-		outchar('-');
+		if (line == program_end)
+			return line;
+
+		if (((LINENUM *)line)[0] >= linenum)
+			return line;
+
+		// Add the line length onto the current address, to get to the next line;
+		line += line[sizeof(LINENUM)];
 	}
-#if DESKTOP == 1
-	printf("%d", num);
-#else
-	print_num(num);
-#endif
+}
+
+void printline()
+{
+	LINENUM line_num;
+
+	line_num = *((LINENUM *)(list_line));
+	list_line += sizeof(LINENUM) + sizeof(char);
+
+	// Output the line */
+	printf("%d ", line_num);
+	while (*list_line != NL)
+	{
+		put_char(*list_line);
+		list_line++;
+	}
+	list_line++;
+	printf("\n");
+}
+
+VAR testnum()
+{
+	VAR num = 0;
+	ignore_blanks(txtpos);
+
+	while (*txtpos >= '0' && *txtpos <= '9')
+	{
+		// Trap overflows
+		if (num >= 0xFFFFFFFF / 10)
+		{
+			num = 0xFFFFFFFF;
+			break;
+		}
+
+		num = num * 10 + *txtpos - '0';
+		txtpos++;
+	}
+	return	num;
+}
+
+void entered_with_line_num()
+{
+	unsigned char linelen;
+	unsigned char *start;
+	char *newEnd;
+	int i, l, first_time;
+	char k;
+	char s[10];
+
+	// Find the length of what is left, including the (yet-to-be-populated) line header
+	linelen = 0;
+	while (txtpos[linelen] != NL)
+		linelen++;
+	linelen++; // Include the NL in the line length
+	linelen += sizeof(LINENUM) + sizeof(char); // Add space for the line number and line length
+
+	// Now we have the number, add the line header.
+	txtpos -= sizeof(LINENUM) + sizeof(char);
+	
+	// ugly odd address hack
+	l = (int)txtpos;
+	if (l % 2 == 1)
+	{
+		txtpos--;
+		txtpos[sizeof(LINENUM) + sizeof(char)] = ' ';
+		linelen++;
+	}
+
+	*((LINENUM *)txtpos) = linenum;
+	txtpos[sizeof(LINENUM)] = linelen;
+
+
+	// Merge it into the rest of the program
+	start = findline();
+
+	// If a line with that number exists, then remove it
+	if (start != program_end && *((LINENUM *)start) == linenum)
+	{
+		unsigned char *dest, *from;
+		unsigned tomove;
+
+		from = start + start[sizeof(LINENUM)];
+		dest = start;
+
+		tomove = program_end - from;
+		while (tomove > 0)
+		{
+			*dest = *from;
+			from++;
+			dest++;
+			tomove--;
+		}
+		program_end = dest;
+	}
+
+	if (txtpos[sizeof(LINENUM) + sizeof(char)] == NL)
+	{
+		// If the line has no txt, it was just a delete
+		return;
+	}
+
+	
+	first_time = 1; // odd address hack
+	// Make room for the new line, either all in one hit or lots of little shuffles
+	while (linelen > 0)
+	{
+		unsigned int tomove;
+		unsigned char *from, *dest;
+		unsigned int space_to_make;
+
+		space_to_make = txtpos - program_end;
+
+		if (space_to_make > linelen)
+			space_to_make = linelen;
+		newEnd = program_end + space_to_make;
+		tomove = program_end - start;
+
+
+		// Source and destination - as these areas may overlap we need to move bottom up
+		from = program_end;
+		dest = newEnd;
+		while (tomove > 0)
+		{
+			from--;
+			dest--;
+			*dest = *from;
+			tomove--;
+		}
+
+		l = 0;
+		if(first_time && (txtpos[sizeof(LINENUM) + sizeof(char)] == ' '))
+		{
+			// Ugly hack for the odd length, which is initially fixed by adding space at the
+			// beginning of the line (just after the line number).
+			// We need to move that space to the end of the line.
+			k = txtpos[sizeof(LINENUM)];
+			k -= sizeof(LINENUM) + sizeof(char); // actual length of line
+			for (l = 0; l < k; l++)
+			{
+				txtpos[sizeof(LINENUM) + sizeof(char) + l] = txtpos[sizeof(LINENUM) + sizeof(char) + l + 1];
+			}
+			txtpos[k + sizeof(LINENUM) + sizeof(char) - 2] = 32;
+			txtpos[k + sizeof(LINENUM) + sizeof(char) - 1] = NL;
+		}
+
+			
+		// Copy over the bytes into the new space
+		for (tomove = 0; tomove < space_to_make; tomove++)
+		{
+			*start = *txtpos;
+				
+			//printf("%d: %c (%d), ", tomove, *start, *start);
+			txtpos++;
+			start++;
+			linelen--;
+		}
+		program_end = newEnd;
+		first_time = 0;  // odd address hack
+	}
+
 }
 
 void qhow()
 {
-	printmsg("how?");
+	printf("how?\n");
 }
 
 void qwhat()
 {
-	printmsg("what?");
+	printf("what?\n");
 }
 
 void qsorry()
 {
-	printmsg("sorry!");
+	printf("sorry!\n");
+}
+
+void exec_mem() 
+{
+	printf("TinyBasic %s\n", kVersion);
+	printf("%d bytes free\n", variables_begin - program_end);
 }
 
 void scantable(const char *table)
@@ -402,6 +552,7 @@ void scantable(const char *table)
 	}
 }
 
+
 char print_quoted_string()
 {
 	int i = 0;
@@ -421,7 +572,7 @@ char print_quoted_string()
 	// Print the characters
 	while (*txtpos != delim)
 	{
-		outchar(*txtpos);
+		put_char(*txtpos);
 		txtpos++;
 	}
 	txtpos++; // Skip over the last delimiter
@@ -593,6 +744,15 @@ VAR expr3(void)
 			else
 				expression_error = 1;
 		}
+		else if (*txtpos == '%')
+		{
+			txtpos++;
+			b = expr4();
+			if (b != 0)
+				a %= b;
+			else
+				expression_error = 1;
+		}
 		else
 			return a;
 	}
@@ -627,6 +787,7 @@ VAR expr2(void)
 	}
 }
 /***************************************************************************/
+
 VAR expression(void)
 {
 	VAR a, b;
@@ -687,61 +848,7 @@ VAR expression(void)
 	}
 	return 0;
 }
-
-void exec_print()
-{
-	if (*txtpos == NL)
-	{
-		return;
-	}
-
-	while (1)
-	{
-		ignore_blanks(txtpos);
-		if (print_quoted_string())
-		{
-			ignore_blanks(txtpos);
-		}
-		else if (*txtpos == '"' || *txtpos == '\'')
-		{
-			qwhat();
-			return;
-		}
-		else
-		{
-			VAR e;
-			expression_error = 0;
-			e = expression();
-			if (expression_error)
-			{
-				qwhat();
-				return;
-			}
-			printnum(e);
-		}
-
-		// At this point we have three options, a comma or a new line
-		if (*txtpos == ',')
-			txtpos++;	// Skip the comma and move onto the next
-		else if (txtpos[0] == ';' && (txtpos[1] == NL || txtpos[1] == ':' || txtpos[1] == ' '))
-		{
-			txtpos++; // This has to be the end of the print - no newline
-			break;
-		}
-		else if (*txtpos == NL || *txtpos == ':')
-		{
-			line_terminator();	// The end of the print statement
-			break;
-		}
-		else
-		{
-			qwhat();
-			return;
-		}
-	}
-
-}
-
+/***************************************************************************/
 void assignment()
 {
 	VAR value;
@@ -800,62 +907,56 @@ void assignment()
 
 }
 
-void printline()
+void exec_print()
 {
-	LINENUM line_num;
-
-	line_num = *((LINENUM *)(list_line));
-	list_line += sizeof(LINENUM) + sizeof(char);
-
-	// Output the line */
-	printnum(line_num);
-	outchar(' ');
-	while (*list_line != NL)
+	if (*txtpos == NL)
 	{
-		outchar(*list_line);
-		list_line++;
+		return;
 	}
-	list_line++;
-	line_terminator();
-}
 
-VAR testnum()
-{
-	VAR num = 0;
-	ignore_blanks(txtpos);
-
-#if DEBUG == 1
-	printf("testnum: txtpos is: %s\n", txtpos);
-#endif
-
-	while (*txtpos >= '0' && *txtpos <= '9')
-	{
-		// Trap overflows
-		if (num >= 0xFFFFFFFF / 10)
-		{
-			num = 0xFFFFFFFF;
-			break;
-		}
-
-		num = num * 10 + *txtpos - '0';
-		txtpos++;
-	}
-	return	num;
-}
-
-unsigned char *findline(void)
-{
-	unsigned char *line = program_start;
 	while (1)
 	{
-		if (line == program_end)
-			return line;
+		ignore_blanks(txtpos);
+		if (print_quoted_string())
+		{
+			ignore_blanks(txtpos);
+		}
+		else if (*txtpos == '"' || *txtpos == '\'')
+		{
+			qwhat();
+			return;
+		}
+		else
+		{
+			VAR e;
+			expression_error = 0;
+			e = expression();
+			if (expression_error)
+			{
+				qwhat();
+				return;
+			}
+			printf("%d",e);
+		}
 
-		if (((LINENUM *)line)[0] >= linenum)
-			return line;
-
-		// Add the line length onto the current address, to get to the next line;
-		line += line[sizeof(LINENUM)];
+		// At this point we have three options, a comma or a new line
+		if (*txtpos == ',')
+			txtpos++;	// Skip the comma and move onto the next
+		else if (txtpos[0] == ';' && (txtpos[1] == NL || txtpos[1] == ':' || txtpos[1] == ' '))
+		{
+			txtpos++; // This has to be the end of the print - no newline
+			break;
+		}
+		else if (*txtpos == NL || *txtpos == ':')
+		{
+			printf("\n");	// The end of the print statement
+			break;
+		}
+		else
+		{
+			qwhat();
+			return;
+		}
 	}
 }
 
@@ -1104,7 +1205,7 @@ int exec_return()
 			tempsp += sizeof(struct stack_for_frame);
 			break;
 		default:
-			printmsg("Stack is stuffed!\n");
+			printf("Stack is stuffed!\n");
 			return 1;
 		}
 	}
@@ -1233,7 +1334,7 @@ int exec_edit()
 		txtpos[j++] = line[i];
 	}
 	txtpos[j] = 0;
-	outchar('#');
+	put_char('#');
 	gets(txtpos);
 
 	i = strlen(txtpos);
@@ -1245,225 +1346,109 @@ int exec_edit()
 	return 3;
 }
 
-int sprintline(int i)
+int to_print_len;
+uint8_t to_print_buff[4500];
+
+// called when the client request is complete
+void my_callback (uint8_t status, uint16_t off, uint16_t len) {
+	memcpy(to_print_buff, eth_buffer+off, len);
+	to_print_len = len;
+	//printf("len: %d\n", len);
+} 
+
+int eth_read_file(char *buffer, char *file_name)
 {
-	LINENUM line_num;
-	char s[10];
-
-	line_num = *((LINENUM *)(list_line));
-	list_line += sizeof(LINENUM) + sizeof(char);
-
-	// Output the line */
-	sprintf(s, "%d ", line_num);
-	strcpy(&buffer[i], s);
-	i += strlen(s);
-	while (*list_line != NL)
-	{
-		buffer[i] = *list_line;
-		list_line++;
-		i++;
-	}
-	list_line++;
-	buffer[i] = NL;
-	i++;
-	
-	return i;
-}
-
-void exec_save()
-{
-	char s[32];
-	int i, j, k, l;
-
-	ignore_blanks();
-	if (*txtpos < 'A' || *txtpos > 'Z')
-	{
-		qwhat();
-		return;
-	}	
-	
-	for (i = 0; txtpos[i] != NL; i++)
-	{
-		s[i] = txtpos[i];
-	}
-	s[i] = 0;
-
-// Find the line
-	list_line = findline();
-	i = 0;
-	while (list_line < program_end)
-	{
-		i = sprintline(i);
-	}
-	
-	write_file(buffer, i, s);
-	printf("OK saving file %s, length: %d\n", s, i);
-}
-
-void skip_to_end()
-{
-	txtpos = program_end + sizeof(LINENUM);
-
-	// Find the end of the freshly entered line
-	while (*txtpos != NL)
-		txtpos++;
-
-	// Move it to the end of program_memory
-	{
-		unsigned char *dest;
-		dest = variables_begin - 1;
-		while (1)
-		{
-			*dest = *txtpos;
-			if (txtpos == program_end + sizeof(LINENUM))
-				break;
-			dest--;
-			txtpos--;
-		}
-		txtpos = dest;
-	}
-}
-
-void entered_with_line_num()
-{
-	unsigned char linelen;
-	unsigned char *start;
-	char *newEnd;
-	int i, l, first_time;
-	char k;
-	char s[10];
-
-	// Find the length of what is left, including the (yet-to-be-populated) line header
-	linelen = 0;
-	while (txtpos[linelen] != NL)
-		linelen++;
-	linelen++; // Include the NL in the line length
-	linelen += sizeof(LINENUM) + sizeof(char); // Add space for the line number and line length
-
-	// Now we have the number, add the line header.
-	txtpos -= sizeof(LINENUM) + sizeof(char);
-	
-	// ugly odd address hack
-	l = (int)txtpos;
-	if (l % 2 == 1)
-	{
-		txtpos--;
-		txtpos[sizeof(LINENUM) + sizeof(char)] = ' ';
-		linelen++;
-	}
-
-	*((LINENUM *)txtpos) = linenum;
-	txtpos[sizeof(LINENUM)] = linelen;
-
-
-	// Merge it into the rest of the program
-	start = findline();
-
-	// If a line with that number exists, then remove it
-	if (start != program_end && *((LINENUM *)start) == linenum)
-	{
-		unsigned char *dest, *from;
-		unsigned tomove;
-
-		from = start + start[sizeof(LINENUM)];
-		dest = start;
-
-		tomove = program_end - from;
-		while (tomove > 0)
-		{
-			*dest = *from;
-			from++;
-			dest++;
-			tomove--;
-		}
-		program_end = dest;
-	}
-
-	if (txtpos[sizeof(LINENUM) + sizeof(char)] == NL)
-	{
-		// If the line has no txt, it was just a delete
-		return;
-	}
-
-	
-	first_time = 1; // odd address hack
-	// Make room for the new line, either all in one hit or lots of little shuffles
-	while (linelen > 0)
-	{
-		unsigned int tomove;
-		unsigned char *from, *dest;
-		unsigned int space_to_make;
-
-		space_to_make = txtpos - program_end;
-
-		if (space_to_make > linelen)
-			space_to_make = linelen;
-		newEnd = program_end + space_to_make;
-		tomove = program_end - start;
-
-
-		// Source and destination - as these areas may overlap we need to move bottom up
-		from = program_end;
-		dest = newEnd;
-		while (tomove > 0)
-		{
-			from--;
-			dest--;
-			*dest = *from;
-			tomove--;
-		}
-
-		l = 0;
-		//printf("txtpos: [%s]\n", &txtpos[5]);
-//		printf("space_to_make: %d\n", space_to_make);
-		if(first_time && (txtpos[sizeof(LINENUM) + sizeof(char)] == ' '))
-		{
-			// Ugly hack for the odd length, which is initially fixed by adding space at the
-			// beginning of the line (just after the line number).
-			// We need to move that space to the end of the line.
-			k = txtpos[sizeof(LINENUM)];
-			k -= sizeof(LINENUM) + sizeof(char); // actual length of line
-			//printf("siftovati: %d\n", k);
-			for (l = 0; l < k; l++)
-			{
-//			printf("%c", txtpos[sizeof(LINENUM) + sizeof(char) + l + 1]);
-				txtpos[sizeof(LINENUM) + sizeof(char) + l] = txtpos[sizeof(LINENUM) + sizeof(char) + l + 1];
+	int len = 0;
+	int init_offset = 0;
+	int size = 1000000;
+	int fail_count = 0;
+	printf("Loading file %s from the ethernet network drive\n", file_name);
+	to_print_len = 0;
+	asm ("irq 0\n"); // IRQ 0000, xxx0 <- turn off timer irq
+	browseUrl("/load:", file_name, server_ip, 0, my_callback);
+//	delay(100);
+	while (len < size) {
+		packetLoop(enc28j60PacketReceive(1500, eth_buffer));
+		//printf("<%d>[%d] %d %d %d %d\n", to_print_off, to_print_len, eth_buffer[to_print_off], eth_buffer[to_print_off + 1], eth_buffer[to_print_off + 2], eth_buffer[to_print_off + 3]);
+		if (to_print_len > 0) {
+			if (size == 1000000) {
+				size = to_print_buff[3];
+				size <<= 8;
+				size |= to_print_buff[2];
+				size <<= 8;
+				size |= to_print_buff[1];
+				size <<= 8;
+				size |= to_print_buff[0];
+				init_offset = 4;
+				if (size == 0) {
+					printf("File %s does not exist\n", file_name);
+					break;
+				}
+				printf("size: %d\n", size);
+			} else {
+				init_offset = 0;
 			}
-			txtpos[k + sizeof(LINENUM) + sizeof(char) - 2] = 32;
-			txtpos[k + sizeof(LINENUM) + sizeof(char) - 1] = NL;
+			printf("#");
+			fail_count = 0;
+			to_print_buff[to_print_len] = 0;
+			memcpy(buffer + len, to_print_buff + init_offset, to_print_len);
+			len += to_print_len - init_offset;
+			//printf("to_print_len: %d, len: %d\n", to_print_len ,len);
+			to_print_len = 0;
+		} else {
+			//printf("@");
+			delay(10);
+			fail_count++;
+			if (fail_count > 256) {
+				printf("ETHERNET TIMEOUT\n");
+				len = 0;
+				break;
+			}
 		}
-
-/*
-		k = txtpos[sizeof(LINENUM)];
-		i = *((LINENUM *)txtpos);
-		sprintf(s, "%d", i);
-		i = strlen(s);
-		printf("broj: %d, space_to_make: %d, s: %s\n", i, space_to_make, s);
-*/		
-			
-		// Copy over the bytes into the new space
-		for (tomove = 0; tomove < space_to_make; tomove++)
-		{
-			*start = *txtpos;
-				
-			//printf("%d: %c (%d), ", tomove, *start, *start);
-			txtpos++;
-			start++;
-			linelen--;
-		}
-/*
-		start-=2;
-		k = *start;
-		printf("kraj-2: %d\n", k);
-		start++;
-		k = *start;
-		printf("kraj-1: %d\n", k);
-		start++;
-*/
-		program_end = newEnd;
-		first_time = 0;  // odd address hack
+		//delay(100);
 	}
+	asm ("irq 1\n"); // IRQ 0000, xxx1 <- turn on timer irq
+	return len;
+}
 
+short int *TIMER_HANDLER_INSTR 	= (short int *)8	; // address of the IRQ#0 handler address first instruction (TIMER handler)
+int *TIMER_HANDLER_ADDR			= (int *)10	; // address of the IRQ#0 handler address (TIMER handler)
+unsigned short int *PORT_TIMER 	= (unsigned short int *)(0x80000000 + 1290)	; // port which is used to set the timer timeout (in milliseconds)
+
+void timer_irq_triggered() {
+	asm ("irq 0\n"); // IRQ 0000, xxx0 <- turn off timer irq
+asm(
+	"push r0\npush r1\npush r2\npush r3\npush r4\npush r5\npush r6\npush r7\npush r8\npush r9\npush r10\npush r11\npush r12\npush r13\n"
+);
+	// prepare stack
+	// params for functions invoked within this irq handler will run over the stack, so we put dummy data on the stack
+	// for each param, you need to put one 32-bit value on the stack, with the initial one anyway
+	asm("push r13\npush r13\n");
+
+	if (eth)
+		packetLoop(enc28j60PacketReceive(1500, eth_buffer));
+
+	// restore the stack before returning
+	asm("pop r13\npop r13\n");
+	asm ("irq 1\n"); // IRQ 0000, xxx1 <- turn on timer irq
+	// restore all registers
+	asm 
+	(
+		"pop r13\npop r12\npop r11\npop r10\npop r9\npop r8\npop r7\npop r6\npop r5\npop r4\npop r3\npop r2\npop r1\npop r0\nmov.w sp,r13\npop r13\niret\n"
+	);
+}
+
+void de_init_timer() {
+	*TIMER_HANDLER_INSTR 	= 0;
+	*TIMER_HANDLER_ADDR 	= 0;
+	*PORT_TIMER = 0;
+}
+
+void init_timer()
+{
+	*TIMER_HANDLER_INSTR 	= 1;
+	*TIMER_HANDLER_ADDR 	= (int)&timer_irq_triggered;
+	*PORT_TIMER = 50;
 }
 
 void exec_load()
@@ -1479,16 +1464,55 @@ void exec_load()
 	}	
 	
 	//printf("address of txtpos: %d\n", txtpos);
-	for (i = 0; txtpos[i] != NL && txtpos[i] != CR && i < 32; i++)
+	for (i = 0; txtpos[i] != NL && txtpos[i] != CR && txtpos[i] != SPACE && txtpos[i] != TAB && i < 32; i++)
 	{
 		//printf("txtpos: %d ", txtpos[i]);
 		s[i] = txtpos[i];
 	}
 	s[i] = 0;
 
-#if DESKTOP == 0
-	printf("Loading file: %s\n", s);
-	i = read_file(buffer, s);
+	printf("Loading file: <%s>\n", s);
+	if (drive == 2) {
+		// DRIVE 2 - UART
+		//asm ("irq 0\n"); // IRQ 0000, xxx0 <- turn off timer irq
+		delay(100);
+		i = uart_read_file(buffer, s);
+		//asm ("irq 1\n");  // IRQ 0000, xxx1 <- turn on timer irq
+	} else if (drive == 0)
+	{
+		// DRIVE 0 - SD card
+		file_descriptor_t fd;
+		if(file_open(s, &fd, O_READ))
+		{
+			int len = fd.dir_entry.filesize;
+			int total = 0;
+			int current;
+			while(total < len)
+			{	
+				current = file_read(&fd, &buffer[total], 512);
+				if (current > 0) {
+					total += current;
+					if ((total / fd.dir_entry.filesize * 100) % 10 == 0)
+						printf("#");
+				} else {
+					printf("Error reading file!\n");
+					return;
+				}
+			}
+
+			buffer[len] = 0;
+			i = len;
+		} else 
+		{
+			printf("SD card file open failed\n");
+			return;
+		}
+	} else 
+	{
+		// DRIVE 1 - ethernet network drive
+		i = eth_read_file(buffer, s);
+	}
+	
 	if (i > 0)
 	{
 		program_end = program_start;
@@ -1537,44 +1561,146 @@ void exec_load()
 	{
 		printf("Error loading file %s\n", s);
 	}
-#else
-	strcpy(s, "10 print 123\n20 print 432\0");
-	i = strlen(s);
-	k = 0;
-	for (j = 0; j <= i; j++)
-	{
-		if (s[j] == NL || s[j] == 0)
-		{
-			txtpos = program_end + sizeof(LINENUM);
-			strncpy(txtpos, &s[k], j);
-			txtpos[j - k] = NL;
-			txtpos[j - k + 1] = 0;
-			k = j + 1;
-			l = strlen(txtpos);
-			if (l % 2 == 0)
-				strcat(txtpos, " ");
-			printmsg(txtpos);
-			toUppercaseBuffer();
-			skip_to_end();
-			linenum = testnum();
-			ignore_blanks();
-			entered_with_line_num();
-		}
-	}
+}
 
-#endif
+int sprintline(int i)
+{
+	LINENUM line_num;
+	char s[10];
+
+	line_num = *((LINENUM *)(list_line));
+	list_line += sizeof(LINENUM) + sizeof(char);
+
+	// Output the line */
+	sprintf(s, "%d ", line_num);
+	strcpy(&buffer[i], s);
+	i += strlen(s);
+	while (*list_line != NL)
+	{
+		buffer[i] = *list_line;
+		list_line++;
+		i++;
+	}
+	list_line++;
+	buffer[i] = NL;
+	i++;
+	
+	return i;
+}
+
+int sd_write_file(char *buff, int len, char *file_name)
+{	
+	file_descriptor_t fd;
+	printf("\nSaving to SD card...\n");
+	int res = file_open(file_name, &fd, O_WRITE);
+	if (res)
+	{
+		int i, curr, total = 0, count = len /512 + 1;
+		for (i = 0; i < count; i++)
+		{
+			curr = file_write(&fd, &buff[total], len > 512 ? 512 : len);
+			if (curr > 0) {
+				len -= curr;
+				total += curr;
+			}
+			else 
+				break;
+			printf("#");
+			//printf("curr: %d, len: %d, total: %d\n", curr, len, total);
+		}
+		printf("\n");
+	} 
+	else 
+	{
+		printf("Could not open file for save.\n");
+	}
+	return 1;	
+}
+
+int eth_write_file(char *buff, int len, char *file_name)
+{	
+	printf("Saving file %s of %d bytes to the ethernet network drive\n", file_name, len);
+}
+
+void exec_save()
+{
+	char s[32];
+	int i, j, k, l;
+
+	ignore_blanks();
+	if (*txtpos < 'A' || *txtpos > 'Z')
+	{
+		qwhat();
+		return;
+	}	
+	
+	int spi = 0;
+	for (i = 0; txtpos[i] != NL && txtpos[i] != SPACE && txtpos[i] != TAB; i++)
+	{
+		s[i] = txtpos[i];
+	}
+	s[i] = 0;
+	printf("Filename: <%s>\n", s);
+
+// Find the line
+	list_line = findline();
+	i = 0;
+	while (list_line < program_end)
+	{
+		i = sprintline(i);
+	}
+	if (drive == 0) {
+		// DRIVE 0 - SD card
+		sd_write_file(buffer, i, s);
+	} else if (drive == 2) {
+		// DRIVE 2 - UART
+		uart_write_file(buffer, i, s);
+	} else 
+	{
+		// DRIVE 1 - ethernet network drive
+		eth_write_file(buffer, i, s);
+	}
+	printf("OK saving file %s, length: %d\n", s, i);
 }
 
 void exec_dir()
 {
-#if DESKTOP == 0
-	ls_folders(buffer);
-	printmsg(buffer);
-	ls_files(buffer);
-	printmsg(buffer);
-#else
-	printmsg("Not implemented yet.");
-#endif
+	int i;
+
+	if (drive == 2)
+	{
+		// DRIVE 2 - UART
+		uart_ls_files(buffer);
+		printf("%s\n", buffer);
+	}
+	else if (drive == 0)
+	{
+		// DRIVE 0 - SD card
+		file_descriptor_t fd;
+		int next = 0;
+		while ((next = getDirEntry(&fd, next)) != 0)
+		{
+			printf("%s %d bytes, cluster: %d (%d)\n", fd.dir_entry.filename, fd.dir_entry.filesize, fd.curr_cluster, fd.dir_entry.first_cluster);
+		}
+	} else 
+	{
+		// DRIVE 1 - ETHERNET NETWORK DRIVE
+		to_print_len = 0;
+		browseUrl("/dir", "", server_ip, 0, my_callback);
+		delay(100);
+		for (i = 0; i < 1000; i++) {
+			//packetLoop(enc28j60PacketReceive(4500, eth_buffer));
+			//printf("<%d>[%d] %d %d %d %d\n", to_print_off, to_print_len, eth_buffer[to_print_off], eth_buffer[to_print_off + 1], eth_buffer[to_print_off + 2], eth_buffer[to_print_off + 3]);
+			if (to_print_len > 0) {
+				to_print_buff[to_print_len] = 0;
+				printf("%s\n", to_print_buff);
+				to_print_len = 0;
+				return;
+			} else 
+			  delay(10);
+		}
+		printf("NETWORK TIMEOUT\n");
+	}
 }
 
 void exec_mode()
@@ -1594,19 +1720,19 @@ void exec_mode()
 	{
 		case 0:
 			video_mode(0);
-			current_video_mode = 0;
+			//current_video_mode = 0;
 			break;
 		case 1:
 			video_mode(1);
-			current_video_mode = 1;
+			//current_video_mode = 1;
 			break;
 		case 2:
 			video_mode(2);
-			current_video_mode = 2;
+			//current_video_mode = 2;
 			break;
 		default:
 			video_mode(0);
-			current_video_mode = 0;
+			//current_video_mode = 0;
 			printf("Invalid video mode: %d\n", value);
 	}
 }
@@ -1906,11 +2032,37 @@ void exec_draw()
 	draw(x, y, c, s);
 }
 
-void exec_mem() 
+void exec_help()
 {
-	printf("%d bytes free\n", variables_begin - program_end);
-//	printf("program: %d\nbsp: %d\nvariables_begin: %d\nbuffer: %d\n", program, bsp, variables_begin, buffer);
-//	printf("program_start: %d\nprogram_end: %d\nstack_limit: %d\n", program_start, program_end, stack_limit);
+	printf("END\n");
+	printf("MEM\n");
+	printf("LET I = 5\n");
+	printf("I = 5\n");
+	printf("INPUT A\n");
+	printf("PRINT A\n");
+	printf("? A\n");
+	printf("FOR I = 1 TO 10 STEP 2\n");
+	printf("NEXT I\n");
+	printf("IF I = 5 GOTO 100\n");
+	printf("GOTO 100\n");
+	printf("GOSUB 100\n");
+	printf("RETURN\n");
+	printf("LOAD P1.BAS\n");
+	printf("SAVE P2.BAS\n");
+	printf("MODE 0 (MODE 1, MODE 2)\n");
+	printf("PLOT 100, 100, color\n");
+	printf("LINE 100, 100, 200, 200, color\n");
+	printf("CIRCLE 100, 100, 50, color\n");
+	printf("DRAW 100, 100, color, 'TEXT'\n");
+	printf("A = KEY()\n");
+	printf("A = ISKEY()\n");
+	printf("DELAY 1000\n");
+	printf("CURSOR 10, 10\n");
+	printf("EXEC TEST.BIN\n");
+	printf("SYS 0\n");
+	printf("DRIVE 0 (SD) or DRIVE 1 (ETHERNET) or DRIVE 2 (UART)\n");
+	printf("TIME\n");
+	printf("ETH 1 or ETH 0\n");
 }
 
 void exec_delay()
@@ -1996,27 +2148,6 @@ void exec_poke()
 	buffer[addr] = value & 0XFF;
 }
 
-void exec_sys()
-{
-	VAR addr;
-	char s[32];
-	
-	ignore_blanks();
-	expression_error = 0;
-	addr = expression();	
-	if (expression_error)
-	{
-		qwhat();
-		return;
-	}
-	printf("call %d\n", addr);
-	addr += 197632;
-	asm("ld.w r0, [r13 + (-4)]\ncallr r0\n");
-	//asm("mov.w r1, jump_buff\nmov.w r0, 2\nst.s [r1], r0\nadd.w r1, 2\nld.w r0, [r13 + (-4)]\nst.w [r1], r0\nadd.w r1, 4\nmov.w r0, 128\nst.s [r1], r0\ncall jump_buff\n");
-	init_stdio();
-	init_files();
-}
-
 void exec_exec()
 {
 	char s[32];
@@ -2037,13 +2168,55 @@ void exec_exec()
 	}
 	s[i] = 0;
 
+	i = 0;
 	printf("Loading program: %s\n", s);
-	i = read_file(buffer, s);
+	if (drive == 0)
+	{
+		// DRIVE 0 - SD card
+		file_descriptor_t fd;
+		if(file_open(s, &fd, O_READ))
+		{
+			int len = fd.dir_entry.filesize;
+			int total = 0;
+			int current;
+			while(total < len)
+			{	
+				current = file_read(&fd, &buffer[total], 512);
+				if (current > 0) {
+					total += current;
+					if ((total / fd.dir_entry.filesize * 100) % 10 == 0)
+						printf("#");
+				}
+				else {
+					printf("Error reading file!\n");
+					return;
+				}
+			}
+
+			buffer[len] = 0;
+			i = len;
+		}
+	}
+	else if (drive == 2)
+	{
+		// DRIVE 2 - UART
+		//asm ("irq\t0\n"); // IRQ 0000, xxx0 <- turn off timer irq
+		delay(100);
+		i = uart_read_file(buffer, s);
+		//asm ("irq\t1\n"); // IRQ 0000, xxx0 <- turn on timer irq
+	} else {
+		// DRIVE 1 - ethernet network drive
+		i = eth_read_file(buffer, s);
+	}
 	if (i > 0) 
 	{
-		asm("call 197632\n");
+		asm("mov.w r0, 197632\ncallr r0\n"); //asm("call 197632\n");
 		init_stdio();
-		init_files();
+		video_mode(0);
+		//current_video_mode = 0;
+		uart_init_files();
+		init_spi();
+		init_eth();
 	} 
 	else 
 	{
@@ -2051,6 +2224,105 @@ void exec_exec()
 	}
 }
 
+void exec_sys()
+{
+	VAR addr;
+	char s[32];
+	
+	ignore_blanks();
+	expression_error = 0;
+	addr = expression();	
+	if (expression_error)
+	{
+		qwhat();
+		return;
+	}
+	printf("call %d\n", addr);
+	addr += 197632;
+	asm("ld.w r0, [r13 + (-4)]\ncallr r0\n");
+	init_stdio();
+	video_mode(0);
+	//current_video_mode = 0;
+	uart_init_files();
+	init_spi();
+	init_eth();
+}
+
+void exec_drive()
+{
+	ignore_blanks();
+	if (*txtpos == NL)
+	{
+		printf("DRIVE: %d\n", drive);
+		return;
+	}
+	if (*txtpos < '0' || *txtpos > '9')
+	{
+		qwhat();
+		return;
+	}	
+	drive = *txtpos - '0';
+	if (drive >= 0 && drive <= 2)
+		printf("DRIVE: %d\n", drive);
+	else
+	{
+		printf("Invalid drive number: %d. Can be from 0 to 2.\n", drive);
+	}
+	
+}
+
+void exec_eth()
+{
+	ignore_blanks();
+	if (*txtpos == NL)
+	{
+		printf("ETHERNET: %d\n", eth);
+		return;
+	}
+	if (*txtpos < '0' || *txtpos > '9')
+	{
+		qwhat();
+		return;
+	}	
+	eth = *txtpos - '0';
+	if (eth >= 0 && eth <= 1) 
+	{
+		printf("ETHERNET: %d\n", eth);
+		// #######################################################################################
+		if (eth == 1)
+			asm ("irq 1\n"); // IRQ 0000, xxx1 <- turn ON timer irq
+		else
+			asm ("irq 0\n"); // IRQ 0000, xxx0 <- turn OFF timer irq
+		// #######################################################################################
+
+	} 
+	else
+	{
+		printf("Invalid ethernet value: %d. Can be 0 or 1.\n", eth);
+	}
+}
+
+void exec_color() 
+{
+	char s[32];
+	
+	ignore_blanks();
+	if (*txtpos == NL)
+	{
+		printf("COLOR: %d\n", color);
+		return;
+	}
+	expression_error = 0;
+	if (expression_error)
+	{
+		qwhat();
+		return;
+	}
+	color = expression();	
+	printf("COLOR SET TO: %d\n", color);
+}
+
+// #################################################################################################################################################
 int direct()
 {
 #if DEBUG == 1
@@ -2065,13 +2337,11 @@ int direct()
 	printf("interpreter: table_index is: %d\n", table_index);
 #endif
 	
-#if DESKTOP == 0
 	if (should_break())
 	{
 		return 0;
 	}
-#endif
-	
+
 	switch (table_index)
 	{
 	case KW_MEM:
@@ -2136,9 +2406,7 @@ int direct()
 		exec_input();
 		break;
 	case KW_CLS:
-#if DESKTOP == 0
-		cls();
-#endif
+		cls(color);
 		break;
 	case KW_EDIT:
 		return exec_edit();
@@ -2184,6 +2452,21 @@ int direct()
 	case KW_SYS:
 		exec_sys();
 		break;
+	case KW_DRIVE:
+		exec_drive();
+		break;
+	case KW_TIME:
+		printf("Current millis: %d\n", get_millis());
+	break;
+	case KW_REM:
+	case KW_QUOTE:
+		break;
+	case KW_ETH:
+		exec_eth();
+		break;
+	case KW_COLOR:
+		exec_color();
+		break;
 	case KW_DEFAULT:
 		assignment();
 		break;
@@ -2193,10 +2476,66 @@ int direct()
 	return 0;
 }
 
+void init_K_API() {
+	K_API_STDIO[K_CLS] 				= ((int)cls) + 4;               // 190000 
+	K_API_STDIO[K_PUT_CHAR] 		= ((int)put_char) + 4;          // 190004 
+	K_API_STDIO[K_PRINTF] 			= ((int)printf) + 4;            // 190008 
+	K_API_STDIO[K_PUTS] 			= ((int)puts) + 4;              // 190012 
+	K_API_STDIO[K_RAND] 			= ((int)rand) + 4;              // 190016 
+	K_API_STDIO[K_SHOULD_BREAK] 	= ((int)should_break) + 4;      // 190020 
+	K_API_STDIO[K_GETC] 			= ((int)getc) + 4;              // 190024 
+	K_API_STDIO[K_GETS] 			= ((int)gets) + 4;              // 190028 
+	K_API_STDIO[K_INIT_STDIO] 		= ((int)init_stdio) + 4;        // 190032 
+	K_API_STDIO[K_DELAY] 			= ((int)delay) + 4;             // 190036 
+	K_API_STDIO[K_XY] 				= ((int)xy) + 4;                // 190040 
+	K_API_STDIO[K_GET_MILLIS]		= ((int)get_millis) + 4;        // 190044 
+	K_API_STDIO[K_IS_KEY_PRESSED]	= ((int)is_key_pressed) + 4;    // 190048 
+	K_API_STDIO[K_IS_KEY_RELEASED]	= ((int)is_key_released) + 4;   // 190052 
+	K_API_STDIO[K_TOGGLE_CURSOR] 	= ((int)toggle_cursor) + 4;     // 190056 
+	K_API_STDIO[K_PUTCHAR]			= ((int)putchar) + 4;           // 190060 
+	K_API_STDIO[K_VIDEO_MODE]		= ((int)video_mode) + 4;        // 190064 
+	K_API_GRAPHICS[K_SCROLL_UP]	    = ((int)scroll_up) + 4;			// 190068
+
+	K_API_STRING[K_STRLEN] =        ((int)strlen) + 4;				// 190100 
+	K_API_STRING[K_STRCMP] =        ((int)strcmp) + 4;				// 190104 
+	K_API_STRING[K_STRNCMP] =       ((int)strncmp) + 4;				// 190108 
+	K_API_STRING[K_MEMCPY] =        ((int)memcpy) + 4; 				// 190112 
+	K_API_STRING[K_MEMSET] =        ((int)memset) + 4; 				// 190116 
+	K_API_STRING[K_MEMMOVE] =       ((int)memmove) + 4; 			// 190120 
+	K_API_STRING[K_STRCPY] =        ((int)strcpy) + 4; 				// 190124 
+	K_API_STRING[K_STRNCPY] =       ((int)strncpy) + 4; 			// 190128 
+	K_API_STRING[K_STRCAT] =        ((int)strcat) + 4;				// 190132 
+	K_API_STRING[K_STRSTR] =        ((int)strstr) + 4;				// 190136 
+	K_API_STRING[K_TOLOWER] =       ((int)tolower) + 4;				// 190140 
+	K_API_STRING[K_TOUPPER] =       ((int)toupper) + 4;				// 190144 
+	K_API_STRING[K_STR_TOUPPER] =   ((int)str_toupper) + 4;			// 190148 
+	K_API_STRING[K_STR_N_TOUPPER] = ((int)str_n_toupper) + 4;		// 190152 
+	K_API_STRING[K_ISDIGIT] =       ((int)isdigit) + 4;				// 190156 
+	K_API_STRING[K_ISLOWER] =       ((int)islower) + 4;				// 190160 
+	K_API_STRING[K_ISUPPER] =       ((int)isupper) + 4;				// 190164 
+	K_API_STRING[K_ISALPHA] =       ((int)isalpha) + 4;				// 190168 
+	K_API_STRING[K_ISALNUM] =       ((int)isalnum) + 4;				// 190172 
+	K_API_STRING[K_ATOI] =          ((int)atoi) + 4;				// 190176 
+	K_API_STRING[K_ISSPACE] =       ((int)isspace) + 4;				// 190180 
+	K_API_STRING[K_MEMCMP] =        ((int)memcmp) + 4;		 	 	// 190184 
+	K_API_STRING[K_STRTOK] =        ((int)strtok) + 4;				// 190188 
+	K_API_STRING[K_STRCHR] =        ((int)strchr) + 4; 				// 190192 
+	K_API_STRING[K_STRRRCHR] =      ((int)strrchr) + 4; 			// 190196 
+	K_API_STRING[K_STRNCASECMP] =   ((int)strncasecmp) + 4; 		// 190200 
+
+	K_API_SPRINTF[K_SPRINTF]	= 	((int)sprintf) + 4;				// 190300
+	K_API_SPRINTF[K_VSPRINTF]	= 	((int)vsprintf) + 4;			// 190304
+
+	K_API_GRAPHICS[K_PIXEL]		=	((int)pixel) + 4;				// 190400
+	K_API_GRAPHICS[K_LINE]		=	((int)line) + 4;				// 190404
+	K_API_GRAPHICS[K_CIRCLE]	=	((int)circle) + 4;				// 190408
+	K_API_GRAPHICS[K_DRAW]		=	((int)draw) + 4;				// 190412
+
+}
 
 int main()
 {
-	int res;
+	int res, len, pos;
 
 	program_start = program;
 	program_end = program_start;
@@ -2206,16 +2545,30 @@ int main()
 	
 	current_line = 0;
 
-#if DESKTOP == 0
+	init_K_API();
+
 	init_stdio();
-	current_video_mode = 0;
+	//current_video_mode = 0;
 	video_mode(0);
-	cls();
-	init_files();
-#endif
-	printf("TinyBasic %s\n", kVersion);
+	color = 1;
+	cls(color);
+	uart_init_files();
+	init_spi();
+	if(!sdcard_init())
+	{
+		printf("SD card init failed!\n");
+	}
+	if (!volume_init(1))
+	{
+		printf("SD card volume failed!\n");
+	}
+
+	init_eth();
+
 	exec_mem();
-	
+
+	init_timer();
+
 	res = 0;
 	while (1)
 	{
